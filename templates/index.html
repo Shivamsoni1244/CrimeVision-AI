@@ -1,0 +1,102 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CrimeVision AI</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<style>
+:root{--bg:#14171c;--panel:#1d222a;--line:#2e3540;--ink:#e8e6df;--mute:#8b94a1;--acc:#4fb3d9;--warn:#e5584f}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 "IBM Plex Sans",system-ui,sans-serif}
+header{padding:14px 24px;border-bottom:1px solid var(--line);display:flex;gap:16px;align-items:center;flex-wrap:wrap}
+h1{font-size:19px;margin:0;font-weight:600}h2{font-size:15px;margin:0 0 10px}
+main{display:grid;grid-template-columns:320px 1fr 340px;gap:16px;padding:16px 24px}
+@media(max-width:1000px){main{grid-template-columns:1fr}}
+section{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:14px}
+input,button{font:inherit;background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:4px;padding:7px 10px}
+button{cursor:pointer;background:var(--acc);color:#07222d;border:0;font-weight:600}button:focus-visible,input:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+.row{display:flex;gap:8px;margin-bottom:10px;align-items:center}.row label{min-width:52px;color:var(--mute)}
+#tl{max-height:420px;overflow:auto;margin:0;padding:0;list-style:none}
+#tl li{padding:6px 0;border-bottom:1px solid var(--line)}#tl b{color:var(--acc);font-variant-numeric:tabular-nums}
+.src{color:var(--mute);font-size:13px}.weapon{color:var(--warn)}
+#view{width:100%;height:320px;background:#0e1115;border-radius:4px}
+#log{height:300px;overflow:auto;margin-bottom:8px}#log p{margin:0 0 8px}.u{color:var(--acc)}
+#msg{width:100%}#status{color:var(--mute)}
+</style></head><body>
+<header><h1>CrimeVision AI</h1>
+<input id="cid" placeholder="Case ID (blank = new)"><span id="status">Ready</span>
+<button onclick="refresh()">Load case</button><button onclick="classify()">Classify crime</button>
+<button onclick="location='/api/report/'+cid.value">Download PDF report</button></header>
+<main>
+<section><h2>Add evidence</h2>
+
+<div class="row">
+  <label>Image</label>
+  <input type="file" id="f_image" accept="image/*">
+  <button type="button" onclick="up('image')">Go</button>
+</div>
+<div class="row">
+  <label>Video</label>
+  <input type="file" id="f_video" accept="video/*">
+  <button type="button" onclick="up('video')">Go</button>
+</div>
+<div class="row">
+  <label>Audio</label>
+  <input type="file" id="f_audio" accept="audio/*">
+  <button type="button" onclick="up('audio')">Go</button>
+</div>
+
+<h2>Assessment</h2><div id="analysis" class="src">Run “Classify crime” after uploading evidence.</div></section>
+<section><h2>Forensic timeline</h2><ul id="tl"><li class="src">No evidence yet. Upload an image, video or audio file.</li></ul>
+<h2 style="margin-top:14px">Scene layout (from detections)</h2><canvas id="view"></canvas></section>
+<section><h2>Ask the evidence</h2><div id="log"></div>
+<input id="msg" placeholder="Who was present at 00:12?" onkeydown="if(event.key==='Enter')ask()"></section>
+</main>
+<script>
+const $=id=>document.getElementById(id),st=t=>$('status').textContent=t;
+const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+async function jsonResponse(r){try{return await r.json()}catch{return {error:`Server returned HTTP ${r.status} without valid JSON`}}}
+async function up(kind){
+ const f=$('f_'+kind).files[0];
+ if(!f){st('Choose a '+kind+' file first');return;}
+ const fd=new FormData();fd.append('file',f);fd.append('case_id',$('cid').value.trim());st('Uploading and analyzing '+kind+'…');
+ try{
+  const r=await fetch('/api/analyze/'+kind,{method:'POST',body:fd}),j=await jsonResponse(r);
+  if(!r.ok){st('Upload error: '+(j.error||`HTTP ${r.status}`));return;}
+  if(!j.case_id){st('Upload response did not include a case ID. Check the server terminal.');return;}
+  $('cid').value=j.case_id;st(kind+' uploaded and analyzed.');await refresh();
+ }catch(e){st('Request failed: '+e.message+' — check that Flask is running.');}
+}
+async function refresh(){
+ const cid=$('cid').value.trim();if(!cid){st('Upload evidence first, or enter an existing Case ID.');return;}
+ try{const r=await fetch('/api/timeline/'+encodeURIComponent(cid)),j=await jsonResponse(r);
+  if(!r.ok){st(j.error||'Could not load case.');return;}
+  $('tl').innerHTML=(j.timeline||[]).map(e=>`<li><b>${e.t==null?'untimed':Number(e.t).toFixed(1)+'s'}</b> <span class="src">${esc(e.source||'')} ${esc(e.event_id||'')} (${esc(e.review_status||'')})</span><br><span class="${e.type==='weapon'?'weapon':''}">${esc(e.text||'')}</span></li>`).join('')||'<li class="src">Timeline is empty.</li>';
+  showAnalysis(j.analysis);draw3d(j.objects||[]);st('Case loaded.');
+ }catch(e){st('Could not load case: '+e.message);}
+}
+function showAnalysis(a){if(!a)return;$('analysis').innerHTML=`<p><b>${esc(a.crime_type||'Unclassified')}</b> (${esc(a.confidence??'N/A')})</p><p>${esc(a.reasoning||'')}</p><p>${esc(a.scenario||'')}</p>`}
+async function classify(){
+ const cid=$('cid').value.trim();
+ if(!cid){st('First choose evidence and click its Go button. This creates a Case ID.');return;}
+ st('Classifying case '+cid+'…');
+ try{const r=await fetch('/api/classify/'+encodeURIComponent(cid),{method:'POST'}),j=await jsonResponse(r);
+  if(!r.ok){st('Classification error: '+(j.error||`HTTP ${r.status}`));return;}
+  showAnalysis(j);st('Classification complete.');
+ }catch(e){st('Classification request failed: '+e.message);}
+}
+async function ask(){
+ const cid=$('cid').value.trim(),q=$('msg').value.trim();
+ if(!cid){st('Upload evidence first to create a case.');return;}if(!q)return;
+ $('msg').value='';$('log').innerHTML+=`<p class="u">${esc(q)}</p>`;
+ try{const r=await fetch('/api/chat/'+encodeURIComponent(cid),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q})}),j=await jsonResponse(r);
+  $('log').innerHTML+=`<p>${esc(j.answer||j.error||`Request failed (HTTP ${r.status})`)}${(j.unverified_citations||[]).length?' <i class="weapon">[unverified citations: '+esc(j.unverified_citations.join(', '))+']</i>':''}</p>`;$('log').scrollTop=1e9;
+ }catch(e){$('log').innerHTML+=`<p>${esc('Request failed: '+e.message)}</p>`;}
+}
+let R,S,C;function draw3d(objs){const cv=$('view');
+ if(!R){R=new THREE.WebGLRenderer({canvas:cv,antialias:true});S=new THREE.Scene();S.background=new THREE.Color(0x0e1115);
+  C=new THREE.PerspectiveCamera(50,cv.clientWidth/cv.clientHeight,.1,100);C.position.set(0,7,9);C.lookAt(0,0,0);
+  S.add(new THREE.GridHelper(10,10,0x2e3540,0x2e3540),new THREE.AmbientLight(0xffffff,.9));R.setSize(cv.clientWidth,cv.clientHeight,false);}
+ S.children.filter(o=>o.userData.obj).forEach(o=>S.remove(o));
+ (objs||[]).forEach(d=>{const h=d.label==='person'?1.8:.6,m=new THREE.Mesh(new THREE.BoxGeometry(.6,h,.6),
+  new THREE.MeshLambertMaterial({color:d.weapon?0xe5584f:d.label==='person'?0x4fb3d9:0x8b94a1}));
+  m.position.set((d.cx-.5)*9,h/2,(d.cy-.5)*7);m.userData.obj=1;S.add(m);});
+ (function loop(){S.rotation.y+=.002;R.render(S,C);requestAnimationFrame(loop)})();}
+</script></body></html>

@@ -1,0 +1,11 @@
+flask>=3.0
+python-dotenv
+torch
+transformers>=4.43
+timm
+pillow
+opencv-python-headless
+openai-whisper
+groq
+reportlab
+pytest
